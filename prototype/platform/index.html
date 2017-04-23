@@ -5,9 +5,16 @@
 <script>
 "use strict"
 
+// All angles are in radians.
 let tau = 2 * Math.PI
+let Phi = (Math.sqrt(5) - 1) / 2
 // Normalize an angle to the range (-tau/2, tau/2)
-let dX = (X) => ((X % tau + tau / 2) % tau) - tau / 2
+let dX = (X) => ((X % tau + 1.5 * tau) % tau) - tau / 2
+function R(a, [x, y]) {
+	let S = Math.sin(a), C = Math.cos(a)
+	return [C * x + S * y, -S * x + C * y]
+}
+
 let canvas = document.getElementById("canvas")
 let context = canvas.getContext("2d")
 UFX.draw.setcontext(context)
@@ -19,15 +26,20 @@ UFX.maximize.onadjust = (canvas, width, height) => {
 }
 UFX.maximize(canvas, { aspects: [1] })
 UFX.key.init()
-UFX.key.watchlist = "up down left right space".split(" ")
+UFX.key.watchlist = "up down left right space tab".split(" ")
 
 UFX.ticker.init((dt) => {
 	let kstate = UFX.key.state()
+	if (kstate.pressed.tab) dt *= 0.1
 	let dkx = (kstate.pressed.right ? 1 : 0) - (kstate.pressed.left ? 1 : 0)
 	let jump = kstate.down.up
+	state.objs.forEach(obj => obj.setold())
 	you.control(dkx, jump)
 	state.objs.forEach(obj => obj.think(dt))
+	you.collide()
 	view.think(dt)
+
+}, () => {
 
 	UFX.draw("fs #333 f0")
 	
@@ -36,6 +48,9 @@ UFX.ticker.init((dt) => {
 	state.drawworld()
 	state.objs.forEach(obj => { context.save() ; obj.draw() ; context.restore() })
 	UFX.draw("]")
+}, {
+	ups: 120,
+	maxupf: 10,
 })
 
 let view = {
@@ -44,7 +59,7 @@ let view = {
 	// y is height in game units, starting at center of planet.
 	y0: 100,
 	// Game units per (0.001 * screen size).
-	Z: 3,
+	Z: 4,
 	think: function (dt) {
 		let dXt = dX(you.X + 40 / this.y0 * (you.right ? 1 : -1) - this.X0)
 		let dyt = you.y + 20 - this.y0
@@ -61,6 +76,14 @@ let view = {
 }
 
 let WorldBound = {
+	setpos: function (X, y) {
+		this.X = X
+		this.y = y
+	},
+	setold: function () {
+		this.oldX = this.X
+		this.oldy = this.y
+	},
 	draw: function () {
 		UFX.draw("r", -this.X, "t", 0, this.y)
 	},
@@ -72,7 +95,53 @@ let Boxy = {
 	},
 	draw: function () {
 		UFX.draw("tr", -this.w / 2, 0, this.w, this.h,
-			"fs gray ss gray lw 1 [ alpha 0.5 f ] s")
+			"fs gray ss gray lw 1 [ alpha 0.5 f ] s",
+			"b o 0 0 2 fs white f")
+	},
+}
+// tilt > 0 means tilting clockwise (to the right).
+let Liney = {
+	init: function (color) {
+		this.color = color
+	},
+	setold: function () {
+		this.oldw = this.w
+		this.oldtilt = this.tilt
+	},
+	catches: function (oldX, oldy, X, y) {
+		this.color = "blue"
+		let dx0 = this.oldy * dX(oldX - this.oldX)
+		let dx1 = this.y * dX(X - this.X)
+		if (Math.abs(dx0) > this.w && Math.abs(dx1) > this.w) return false
+		this.color = "green"
+		let dy0 = oldy - this.oldy
+		let dy1 = y - this.y
+		if (Math.abs(dy0) > this.w && Math.abs(dy1) > this.w) return false
+		this.color = "yellow"
+		;[dx0, dy0] = R(-this.oldtilt, [dx0, dy0])
+		;[dx1, dy1] = R(-this.tilt, [dx1, dy1])
+		console.log(dx0, dy0, dx1, dy1)
+		if (dy0 <= 0 || dy1 > 0) return false;
+		this.color = "orange"
+		if (Math.abs(dx0 + dx1) / 2 <= this.w / 2) {
+			this.color = "red"
+			return true
+		}
+	},
+	getperchw: function (oldX, oldy, X, y) {
+		let dx0 = this.oldy * dX(oldX - this.oldX)
+		let dx1 = this.y * dX(X - this.X)
+		let dy0 = oldy - this.oldy
+		let dy1 = y - this.y
+		if (Math.abs(dy0) > this.w && Math.abs(dy1) > this.w) return false
+		;[dx0, dy0] = R(-this.oldtilt, [dx0, dy0])
+		;[dx1, dy1] = R(-this.tilt, [dx1, dy1])
+		let f = dy0 / (dy0 - dy1)
+		return dx0 + f * (dx1 - dx0)
+	},
+	draw: function () {
+		UFX.draw("r", -this.tilt, "b m", -this.w / 2, 0, "l", this.w / 2, 0,
+			"lw 1.5 ss", this.color, "s")
 	},
 }
 let YouPhysics = {
@@ -91,6 +160,10 @@ let YouPhysics = {
 		this.state.think.call(this, dt)
 		this.resolvestate()
 	},
+	collide: function () {
+		this.state.collide.call(this)
+		this.resolvestate()
+	},
 	resolvestate: function () {
 		if (this.newstate) {
 			if (this.state.exit) this.state.exit.call(this)
@@ -98,6 +171,11 @@ let YouPhysics = {
 			this.newstate = null
 			if (this.state.enter) this.state.enter.call(this)
 		}
+	},
+	draw: function () {
+		if (this.perch) UFX.draw("r", -this.perch.tilt)
+		let dx = this.w / 2 * (this.right ? 1 : -1), dy = this.h * 0.7
+		UFX.draw("b o", dx, dy, 2, "fs white f")
 	},
 }
 let states = {
@@ -121,6 +199,8 @@ let states = {
 			this.y = state.R
 			this.X += this.vx / this.y * dt
 		},
+		collide: function () {
+		},
 	},
 	spaceborne: {
 		control: function (dkx, jump) {
@@ -138,7 +218,43 @@ let states = {
 			this.vy += a * dt
 			this.X += this.vx / this.y * dt
 			if (this.vy < 0 && this.y <= state.R) this.newstate = states.grounded
-			// TODO: test collide with platforms
+		},
+		collide: function () {
+			let perch = state.findperch(this.oldX, this.oldy, this.X, this.y)
+			if (perch) {
+				this.perch = perch
+				this.newstate = states.alit
+			}
+		},
+	},
+	alit: {
+		enter: function () {
+			this.perchw = this.perch.getperchw(this.oldX, this.oldy, this.X, this.y)
+		},
+		control: function (dkx, jump) {
+			if (dkx) this.right = dkx > 0
+			this.vw = 100 * dkx
+			if (jump) {
+				this.kjump = 1
+				this.newstate = states.spaceborne
+				;[this.vx, this.vy] = R(this.perch.tilt, [0, 160])
+			}
+		},
+		think: function (dt) {
+			;[this.vx, this.vy] = R(this.perch.tilt, [this.vw, 0])
+			this.perchw += dt * this.vw
+			let [dx, dy] = R(this.perch.tilt, [this.perchw, 0])
+			this.y = this.perch.y + dy
+			this.X = this.perch.X + dx / this.perch.y
+			if (Math.abs(this.perchw) > this.perch.w / 2) {
+				this.kjump = 1
+				this.newstate = states.spaceborne
+			}
+		},
+		collide: function () {
+		},
+		exit: function () {
+			this.perch = null
 		},
 	},
 }
@@ -147,8 +263,18 @@ let you = UFX.Thing()
 	.addcomp(WorldBound)
 	.addcomp(YouPhysics)
 	.addcomp(Boxy, 20, 30)
-you.X = 0
-you.y = 100
+you.setpos(0, 100)
+
+function FixedPlatform(X, y, w, tilt) {
+	this.setpos(X, y)
+	this.w = w
+	this.tilt = tilt
+}
+FixedPlatform.prototype = UFX.Thing()
+	.addcomp(WorldBound)
+	.addcomp(Liney, "gray")
+	.definemethod("think")
+
 
 let state = {
 	R: 100,
@@ -157,7 +283,23 @@ let state = {
 	drawworld: function () {
 		let grad = UFX.draw.lingrad(0, 100, 0, -100, 0, "#228", 1, "#282")
 		UFX.draw("b o 0 0", this.R, "fs", grad, "f")
-	}
+	},
+	findperch: function (oldX, oldy, X, y) {
+		for (let j = 0 ; j < this.objs.length ; ++j) {
+			let obj = this.objs[j]
+			if (obj instanceof FixedPlatform) {
+				if (obj.catches(oldX, oldy, X, y)) {
+					console.log("caught")
+					return obj
+				}
+			}
+		}
+		return null
+	},
 }
-
+for (let j = 0 ; j < 50 ; ++j) {
+	let y = 110 + 10 * j, X = Phi * tau * j
+	let w = UFX.random(20, 60), tilt = UFX.random(-0.5, 0.5)
+	state.objs.push(new FixedPlatform(X, y, w, tilt))
+}
 </script>
