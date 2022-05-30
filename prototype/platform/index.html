@@ -14,6 +14,15 @@ function R(a, [x, y]) {
 	let S = Math.sin(a), C = Math.cos(a)
 	return [C * x + S * y, -S * x + C * y]
 }
+// Soft approach function
+function to(x, target, dlogx, dxmax, dymin) {
+	dxmax = dxmax || Number.POSITIVE_INFINITY
+	dymin = dymin || 0.1
+	let d = Math.abs(x - target)
+	let f = 1 - Math.exp(-dlogx)
+	if ((1 - f) * d < dymin) return target
+	return x + (target - x) * f
+}
 
 let canvas = document.getElementById("canvas")
 let context = canvas.getContext("2d")
@@ -76,13 +85,20 @@ let view = {
 }
 
 let WorldBound = {
+	init: function () {
+		this.t = 0
+	},
 	setpos: function (X, y) {
 		this.X = X
 		this.y = y
 	},
 	setold: function () {
+		this.oldt = this.t
 		this.oldX = this.X
 		this.oldy = this.y
+	},
+	think: function (dt) {
+		this.t += dt
 	},
 	draw: function () {
 		UFX.draw("r", -this.X, "t", 0, this.y)
@@ -103,30 +119,28 @@ let Boxy = {
 let Liney = {
 	init: function (color) {
 		this.color = color
+		this.vx = 0
+		this.vy = 0
+	},
+	setwtilt: function (w, tilt) {
+		this.w = w
+		this.tilt = tilt
 	},
 	setold: function () {
 		this.oldw = this.w
 		this.oldtilt = this.tilt
 	},
 	catches: function (oldX, oldy, X, y) {
-		this.color = "blue"
 		let dx0 = this.oldy * dX(oldX - this.oldX)
 		let dx1 = this.y * dX(X - this.X)
 		if (Math.abs(dx0) > this.w && Math.abs(dx1) > this.w) return false
-		this.color = "green"
 		let dy0 = oldy - this.oldy
 		let dy1 = y - this.y
 		if (Math.abs(dy0) > this.w && Math.abs(dy1) > this.w) return false
-		this.color = "yellow"
 		;[dx0, dy0] = R(-this.oldtilt, [dx0, dy0])
 		;[dx1, dy1] = R(-this.tilt, [dx1, dy1])
-		console.log(dx0, dy0, dx1, dy1)
-		if (dy0 <= 0 || dy1 > 0) return false;
-		this.color = "orange"
-		if (Math.abs(dx0 + dx1) / 2 <= this.w / 2) {
-			this.color = "red"
-			return true
-		}
+		if (dy0 <= 0 || dy1 > 0) return false
+		return Math.abs(dx0 + dx1) / 2 <= this.w / 2
 	},
 	getperchw: function (oldX, oldy, X, y) {
 		let dx0 = this.oldy * dX(oldX - this.oldX)
@@ -144,6 +158,69 @@ let Liney = {
 			"lw 1.5 ss", this.color, "s")
 	},
 }
+let Elevates = {
+	think: function (dt) {
+		let theta = tau * this.t / this.Televate
+		this.y = this.y0elevate + this.helevate * Math.sin(theta)
+		this.vy = this.helevate * Math.cos(theta) * tau / this.Televate
+	},
+}
+let Wobbles = {
+	setpos: function (X, y) {
+		this.Xcenter = X
+		this.ycenter = y
+		this.Xoff = 0
+		this.yoff = 0
+	},
+	setwtilt: function (w, tilt) {
+		this.wcenter = w
+		this.tiltcenter = tilt
+		this.woff = 0
+		this.tiltoff = 0
+	},
+	think: function (dt) {
+		let [Xoff, yoff, woff, tiltoff] = this.getoffsets()
+		this.Xoff = to(this.Xoff * this.y, Xoff * this.y, 6 * dt) / this.y
+		this.yoff = to(this.yoff, yoff, 6 * dt)
+		this.woff = to(this.woff, woff, 6 * dt)
+		this.tiltoff = to(this.tiltoff, tiltoff, 10 * dt)
+		this.X = this.Xcenter + this.Xoff
+		this.y = this.ycenter + this.yoff
+		this.w = this.wcenter + this.woff
+		this.tilt = this.tiltcenter + this.tiltoff
+	},
+	getoffsets: function () {
+		if (this === you.perch) {
+			let Xoff = -0.1 * you.vw / this.y
+			let yoff = -6
+			let tiltoff = 0.4 * you.perchw / this.w
+			return [Xoff, yoff, 0, tiltoff]
+		}
+		return [0, 0, 0, 0]
+	},
+}
+let SeeksYou = {
+	getoffsets: function () {
+		if (this === you.perch) {
+			let Xoff = -0.1 * you.vw / this.y
+			let yoff = -6
+			let tiltoff = 0.4 * you.perchw / this.w
+			return [Xoff, yoff, 0, tiltoff]
+		}
+		if (you.state === states.spaceborne) {
+			let dx = dX(you.X - this.X) * this.y
+			let dy = you.y - this.y
+			if (dx * dx + dy * dy < this.w * this.w) {
+				let d = 1 - (dx * dx + dy * dy) / (this.w * this.w)
+				let Xoff = d * to(0, dx, 5) / this.y
+				let yoff = d * to(0, dy, 5)
+				return [Xoff, yoff, 0, 0]
+			}
+		}
+		return [0, 0, 0, 0]
+	},
+}
+
 let YouPhysics = {
 	init: function () {
 		this.vx = 0
@@ -242,16 +319,19 @@ let states = {
 		},
 		think: function (dt) {
 			;[this.vx, this.vy] = R(this.perch.tilt, [this.vw, 0])
+			this.vx += this.perch.vx
+			this.vy += this.perch.vy
 			this.perchw += dt * this.vw
-			let [dx, dy] = R(this.perch.tilt, [this.perchw, 0])
-			this.y = this.perch.y + dy
-			this.X = this.perch.X + dx / this.perch.y
 			if (Math.abs(this.perchw) > this.perch.w / 2) {
 				this.kjump = 1
 				this.newstate = states.spaceborne
 			}
 		},
 		collide: function () {
+			// Needs to be after think so perch position can be resolved.
+			let [dx, dy] = R(this.perch.tilt, [this.perchw, 0])
+			this.y = this.perch.y + dy
+			this.X = this.perch.X + dx / this.perch.y
 		},
 		exit: function () {
 			this.perch = null
@@ -267,13 +347,43 @@ you.setpos(0, 100)
 
 function FixedPlatform(X, y, w, tilt) {
 	this.setpos(X, y)
-	this.w = w
-	this.tilt = tilt
+	this.setwtilt(w, tilt)
 }
 FixedPlatform.prototype = UFX.Thing()
 	.addcomp(WorldBound)
 	.addcomp(Liney, "gray")
 	.definemethod("think")
+
+function ElevatorPlatform(X, y, h, T, w, tilt) {
+	this.setpos(X, y)
+	this.setwtilt(w, tilt)
+	this.y0elevate = y
+	this.helevate = h
+	this.Televate = T
+}
+ElevatorPlatform.prototype = UFX.Thing()
+	.addcomp(WorldBound)
+	.addcomp(Liney, "brown")
+	.addcomp(Elevates)
+
+function WobblyPlatform(X, y, w, tilt) {
+	this.setpos(X, y)
+	this.setwtilt(w, tilt)
+}
+WobblyPlatform.prototype = UFX.Thing()
+	.addcomp(WorldBound)
+	.addcomp(Liney, "cyan")
+	.addcomp(Wobbles)
+
+function HelpingPlatform(X, y, w, tilt) {
+	this.setpos(X, y)
+	this.setwtilt(w, tilt)
+}
+HelpingPlatform.prototype = UFX.Thing()
+	.addcomp(WorldBound)
+	.addcomp(Liney, "cyan")
+	.addcomp(Wobbles)
+	.addcomp(SeeksYou)
 
 
 let state = {
@@ -281,15 +391,23 @@ let state = {
 	njump: 2,
 	objs: [you],
 	drawworld: function () {
+		UFX.draw("[ lw 0.5 ss green alpha 0.3")
+		for (let y = 50 ; y <= 500 ; y += 50) {
+			UFX.draw("b o 0 0", y, "s")
+		}
+		for (let jtheta = 0 ; jtheta < 12 ; ++jtheta) {
+			let theta = tau * jtheta / 24
+			UFX.draw("[ r", theta, "b m -500 0 l 500 0 s ]")
+		}
+		UFX.draw("]")
 		let grad = UFX.draw.lingrad(0, 100, 0, -100, 0, "#228", 1, "#282")
 		UFX.draw("b o 0 0", this.R, "fs", grad, "f")
 	},
 	findperch: function (oldX, oldy, X, y) {
 		for (let j = 0 ; j < this.objs.length ; ++j) {
 			let obj = this.objs[j]
-			if (obj instanceof FixedPlatform) {
+			if (obj.catches) {
 				if (obj.catches(oldX, oldy, X, y)) {
-					console.log("caught")
 					return obj
 				}
 			}
@@ -300,6 +418,7 @@ let state = {
 for (let j = 0 ; j < 50 ; ++j) {
 	let y = 110 + 10 * j, X = Phi * tau * j
 	let w = UFX.random(20, 60), tilt = UFX.random(-0.5, 0.5)
-	state.objs.push(new FixedPlatform(X, y, w, tilt))
+//	state.objs.push(new HelpingPlatform(X, y, w, tilt))
 }
+state.objs.push(new ElevatorPlatform(1, 250, 120, 3, 50, 0))
 </script>
